@@ -1,10 +1,37 @@
 # KinWalk — Android phone app
 
-An original, personal fitness tracker made for Kin. The **APK is not included**
-in this source package because the current workspace lacks the Android SDK and
-Gradle build tools. This is an actual Android app project, rather than a browser
-shortcut. Android Studio (or the included GitHub Actions workflow) can compile
-it into an APK.
+An original, personal fitness tracker made for Kin. This is an Android app with
+an offline WebView interface and a native phone step-counter bridge. Android
+Studio or the included GitHub Actions workflow can compile it into an APK.
+
+## Run the interface locally
+
+On Windows, double-click `Preview-KinWalk.cmd` (requires Python 3). It opens
+`http://127.0.0.1:4173` and serves the same interface bundled in the Android app.
+Leave the terminal open while using it; press **Ctrl+C** to stop it.
+
+Or, from this project's directory on any system with Python 3:
+
+```sh
+python -m http.server 4173 --bind 127.0.0.1 --directory app/src/main/assets
+```
+
+Food, water, progress, settings and backups work in this preview. Phone step
+counting requires the Android app and an actual compatible sensor. Browser and
+Android data remain separate; move tracker records with export/import.
+
+## Run regression tests
+
+With Node.js 22 or later, run:
+
+```sh
+node --test tests/tracker.test.cjs
+```
+
+The tests cover backup validation, older backup compatibility, night-shift date
+boundaries, native setting synchronization, data reset, input validation, safe
+exports and Walk Garden updates. CI runs these tests before building and linting
+the Android app.
 
 ## Features
 
@@ -47,6 +74,11 @@ concerning symptoms occur; active chest pain can be an emergency.
 4. Unzip the artifact, transfer `app-debug.apk` to your phone and install it.
    This debug APK is for personal testing, not Play Store distribution.
 
+The workflow explicitly requests `platform-tools`, `platforms;android-35` and
+`build-tools;35.0.0`. This avoids setup-android v3's default request for the
+removed legacy `tools` package, which causes `Failed to find package 'tools'`
+before the app can compile. Pull requests also run the build and tests.
+
 ## Using the step sensor
 
 On the phone, after medical clearance, open **Walk Garden**, check the
@@ -73,9 +105,10 @@ in KinWalk on Android, use **Settings > Restore a backup** and select that JSON
 file. Export a new backup periodically; deleting the app can delete its data.
 
 The app stores all records locally on this device. Settings > Erase all saved
-data resets food, water, weight and symptom entries, but native step count
-records are stored separately in Android app preferences and are cleared by
-uninstalling/clearing the app's data.
+data resets food, water, weight, symptoms, habits, settings and native step
+history. It also disables walking tracking until enabled again. Restoring a
+backup updates the native cutoff and walking settings immediately. Backups
+contain tracker records and settings; they do not contain native step history.
 
 ## Technical details
 
@@ -86,4 +119,8 @@ uninstalling/clearing the app's data.
 - No `INTERNET`, location, camera, or external storage permission.
 - `ACTIVITY_RECOGNITION` is the only runtime permission.
 
-No real APK build or phone hardware test was possible in this environment.
+Local validation: regression tests pass, Java compiles against Android SDK 35,
+and a debug APK was packaged with the installed SDK tools and its signature
+verified. The standard Gradle build and Android lint could not run here because
+the environment blocks Gradle's local daemon connection. Physical phone sensor
+behavior and Android 15 insets still require a device or emulator check.

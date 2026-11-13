@@ -11,6 +11,7 @@ import android.hardware.SensorManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -52,6 +53,19 @@ public final class MainActivity extends Activity implements SensorEventListener 
         stepCounter = sensors.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
         web = new WebView(this);
         setContentView(web);
+        // Android 15 enforces edge-to-edge for target SDK 35. Keep controls clear
+        // of system bars, display cutouts and the on-screen keyboard.
+        if (Build.VERSION.SDK_INT >= 30) {
+            web.setOnApplyWindowInsetsListener((view, insets) -> {
+                android.graphics.Insets safe = insets.getInsets(
+                        android.view.WindowInsets.Type.systemBars()
+                        | android.view.WindowInsets.Type.displayCutout()
+                        | android.view.WindowInsets.Type.ime());
+                view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+                return insets;
+            });
+            web.requestApplyInsets();
+        }
         WebSettings cfg = web.getSettings();
         cfg.setJavaScriptEnabled(true);
         cfg.setDomStorageEnabled(true);
@@ -68,11 +82,17 @@ public final class MainActivity extends Activity implements SensorEventListener 
             }
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
                 Uri uri = req.getUrl();
-                if ("https".equals(uri.getScheme()) && "kin.local".equals(uri.getHost())
-                        && ("/".equals(uri.getPath()) || "/index.html".equals(uri.getPath()))) {
+                if ("https".equals(uri.getScheme()) && "kin.local".equals(uri.getHost())) {
+                    String path = uri.getPath();
+                    String asset = "/".equals(path) || "/index.html".equals(path) ? "index.html"
+                            : "/app.js".equals(path) ? "app.js"
+                            : "/tracker-data.js".equals(path) ? "tracker-data.js" : null;
                     try {
-                        InputStream stream = getAssets().open("index.html");
-                        return new WebResourceResponse("text/html", "UTF-8", stream);
+                        if (asset != null) {
+                            InputStream stream = getAssets().open(asset);
+                            return new WebResourceResponse(asset.endsWith(".js") ? "application/javascript"
+                                    : "text/html", "UTF-8", stream);
+                        }
                     } catch (Exception ignored) { }
                 }
                 // Do not allow the embedded app to make external network requests.
@@ -133,19 +153,21 @@ public final class MainActivity extends Activity implements SensorEventListener 
     }
 
     @Override public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() != Sensor.TYPE_STEP_COUNTER) return;
+        if (event.sensor.getType() != Sensor.TYPE_STEP_COUNTER || !walkingEnabled()) return;
         long current = Math.round(event.values[0]);
         android.content.SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
         long last = p.getLong("last", -1);
+        int boot = Settings.Global.getInt(getContentResolver(), Settings.Global.BOOT_COUNT, -1);
+        boolean sameBoot = boot >= 0 && p.getInt("boot", -2) == boot;
         String key = "steps_" + currentDay();
         android.content.SharedPreferences.Editor edit = p.edit();
         // First reading establishes the baseline. A lower count indicates a reboot.
-        if (last >= 0 && current >= last) {
+        if (sameBoot && last >= 0 && current >= last) {
             long delta = current - last;
             long previous = p.getLong(key, 0);
             edit.putLong(key, Math.min(Integer.MAX_VALUE, previous + delta));
         }
-        edit.putLong("last", current).apply();
+        edit.putLong("last", current).putInt("boot", boot).apply();
     }
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
 
@@ -164,10 +186,21 @@ public final class MainActivity extends Activity implements SensorEventListener 
     private final class PhoneBridge {
         @JavascriptInterface public String getSteps() { return stepsState(); }
         @JavascriptInterface public void setWalkingEnabled(boolean enabled) {
-            getPreferences(MODE_PRIVATE).edit().putBoolean("walking_enabled", enabled).apply();
             runOnUiThread(() -> {
+                if (walkingEnabled() != enabled) {
+                    // Do not credit steps taken while tracking was disabled.
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("last").remove("boot").apply();
+                }
+                getPreferences(MODE_PRIVATE).edit().putBoolean("walking_enabled", enabled).apply();
                 if (enabled) startSensor();
                 else sensors.unregisterListener(MainActivity.this);
+            });
+        }
+        @JavascriptInterface public void clearStepData() {
+            runOnUiThread(() -> {
+                sensors.unregisterListener(MainActivity.this);
+                getPreferences(MODE_PRIVATE).edit().putBoolean("walking_enabled", false).apply();
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit().clear().apply();
             });
         }
         @JavascriptInterface public void requestSteps() {
